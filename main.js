@@ -1,6 +1,10 @@
+let UUID = require('uuid');
 let configInfo = require("./config/config.json");
 const RtcTokenBuilder = require('./agora/src/RtcTokenBuilder').RtcTokenBuilder;
 const RtcRole = require('./agora/src/RtcTokenBuilder').Role;
+const ErrorCode = require('./data/error_code');
+let TokenMap = {};
+const TOKEN_EXPIRE_TIME = 24*60*60; // 单位秒
 
 function sleep(ms) {
   return new Promise(resolve=>setTimeout(resolve, ms))
@@ -16,6 +20,23 @@ Parse.Cloud.job("myjob",(request)=>{
   doSomethingVeryLong(request);
   return "";
 });
+
+function checkUserValid(request){
+  let token = request.params.token;
+  if(!token){
+    return false;
+  }
+  let tokenInfo = TokenMap[token];
+  if(!tokenInfo){
+    return false;
+  }
+  let curDate = new Date();
+  if((curDate - tokenInfo.CreateTime)>TOKEN_EXPIRE_TIME*1000){
+    return false;
+  }
+  request.params.accountId = tokenInfo.userid;
+  return true;
+}
 /*
 ​Parse.Cloud.job("myJobtest", (request) =>  {
   ​const { params, headers, log, message } = request;
@@ -23,9 +44,435 @@ Parse.Cloud.job("myjob",(request)=>{
   ​return doSomethingVeryLong(request);
 ​});
 */
-Parse.Cloud.define("getSMSVerifyCode", async (request) => {
+
+//////////////////////// SCHEMA ///////////////////////////////////
+//////////////////////// ClassName: VerifyCode ///////////////////////////////////
+// code: 验证码
+// used：0：未使用，1：已使用
+
+Parse.Cloud.define("sendSMSVerifyCode", async (request) => {
+  var Num="";
+  for(var i=0;i<6;i++)
+  {
+     Num+=Math.floor(Math.random()*10);
+  }
+  //send SMS code to mobile
+  let verifyCodeObject = new Parse.Object("VerifyCode");
+  verifyCodeObject.set("code", Num);
+  verifyCodeObject.set("used", 0);
+  await verifyCodeObject.save();
+  return {"code":ErrorCode.SUCCESS, "msg":"OK"};
+});
+
+Parse.Cloud.define("VerifySMSCode", async (request) => {
   //
   return "not ready";
+});
+
+
+Parse.Cloud.define("registerAccount", async (request) => {
+  let userName = request.params.userName;
+  let firstName = request.params.firstName;
+  let lastName = request.params.lastName;
+  let email = request.params.email;
+  let mobile = request.params.mobile;
+  let role = request.params.role;
+  let age = request.params.age;
+  let password = request.params.password;
+  const query = new Parse.Query("account");
+  query.equalTo("userName", userName);
+  let count = await query.count();
+  if(count>0){
+    return {"code":ErrorCode.UserAlreadyExist, "msg":"username already exist"};
+  }
+
+  let accountObject = new Parse.Object("account");
+  accountObject.set("userName", userName);
+  accountObject.set("firstName", firstName);
+  accountObject.set("lastName", lastName);
+  accountObject.set("email", email);
+  accountObject.set("mobile", mobile);
+  accountObject.set("role", role);
+  accountObject.set("age", age);
+  accountObject.set("password", password);
+  if(age>=16){
+    accountObject.set("isAbove16", true);
+  }else{
+    accountObject.set("isAbove16", false);
+  }
+  let saveRes = await accountObject.save();
+
+  return {"code":ErrorCode.SUCCESS, "user":saveRes};
+});
+
+Parse.Cloud.define("login", async (request) => {
+  // 
+  let type = request.params.type;
+  const query = new Parse.Query("account");
+  if(type=="username"){
+    let userName = request.params.userName;
+    let password = request.params.password;
+    query.equalTo("userName", userName);
+    query.equalTo("password", password);
+  }else if(type=="facebook"){
+    let id = request.params.id;
+    let access_token = request.params.access_token;
+  }else if(type=="wechat"){
+    let id = request.params.id;
+    let access_token = request.params.access_token;
+  }else if(type=="sms"){
+    let id = request.params.mobile;
+    let verifyCode = request.params.verifyCode;
+  }
+  let accountObj = await query.first();
+  if(!accountObj){
+    return {"code":ErrorCode.LoginFailed, "msg":"login failed"}
+  }
+  let token = UUID.v1();
+  accountObj.set("token",token);
+  let curDate = new Date();
+  accountObj.set("tokenDate",curDate);
+  await accountObj.save();
+  return {"code":ErrorCode.LoginFailed, "token":token};
+});
+
+Parse.Cloud.define("createContest", async (request) => {
+
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+
+
+  let title = request.params.title;
+  let summary = request.params.summary;
+  let contestType = request.params.contestType;
+  let owner = request.params.owner;
+  let startDatetime = request.params.startDatetime;
+  let duration = request.params.duration;
+  let instrument = request.params.instrument;
+  let music = request.params.music;
+  let minEntryAge = request.params.minEntryAge;
+  let maxEntryAge = request.params.maxEntryAge;
+  let timeLimit = request.params.timeLimit;
+  let maxContestant = request.params.maxContestant;
+  let organizer = request.params.organizer;
+  let status = request.params.status;
+
+  let contestObject = new Parse.Object("contest");
+  contestObject.set("title", title);
+  contestObject.set("summary", summary);
+  contestObject.set("contestType", contestType);
+  contestObject.set("owner", owner);
+  contestObject.set("startDatetime", startDatetime);
+  contestObject.set("duration", duration);
+  contestObject.set("instrument", instrument);
+  contestObject.set("music", music);
+  contestObject.set("minEntryAge", minEntryAge);
+  contestObject.set("maxEntryAge", maxEntryAge);
+  contestObject.set("timeLimit", timeLimit);
+  contestObject.set("maxContestant", maxContestant);
+  contestObject.set("organizer", organizer);
+  contestObject.set("status", status);
+
+  let saveRes = await contestObject.save();
+  return {"code":ErrorCode.SUCCESS,  "data":saveRes};
+});
+
+
+// 邀请裁判
+Parse.Cloud.define("inviteContestJudge", async (request) => {
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+
+  let objectId = request.params.objectId;
+  if(!objectId){
+    return {"code":ErrorCode.ContestNotExist,  "msg":ErrorCode.ContestNotExistStr};
+  }
+  const contestQuery = new Parse.Query("contest");
+  let contestObj = await contestQuery.get(objectId);
+  if(!contestObj){
+    return {"code":ErrorCode.ContestNotExist,  "msg":ErrorCode.ContestNotExistStr};
+  }
+
+  let judgeId = request.params.judgeId;
+  if(!judgeId){
+    return {"code":ErrorCode.JudgeNotExist,  "msg":ErrorCode.JudgeNotExistStr};
+  }
+  const accountQuery = new Parse.Query("account");
+  let judgeObj = await accountQuery.get(judgeId);
+  if(!judgeObj){
+    return {"code":ErrorCode.JudgeNotExist,  "msg":ErrorCode.JudgeNotExistStr};
+  }
+
+  let judges = contestObj.get("judges");
+  for(let i = 0; i < judges.length; i++){
+    if(judges[i]==judgeId){
+      // 已经存在就直接返回，还是报错好？
+      return {"code":ErrorCode.SUCCESS,  "msg":ErrorCode.SuccessStr};
+    }
+  }
+
+  // 给裁判发推送（未写）
+  
+
+  let judgeStates = contestObj.get("judgeStates");
+  judges.push(judgeId);
+  judgeStates.push("pending");
+  contestObj.set("judges",judges);
+  contestObj.set("judgeStates",judgeStates);
+  await contestObj.save();
+  return {"code":ErrorCode.SUCCESS,  "msg":ErrorCode.SuccessStr};
+
+
+});
+
+// 裁判接受邀请
+Parse.Cloud.define("contestJudgeAccepted", async (request) => {
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+  let objectId = request.params.objectId;
+  let judgeId = request.params.accountId;
+  const contestQuery = new Parse.Query("contest");
+  let contestObj = await contestQuery.get(objectId);
+  if(!contestObj){
+    return {"code":ErrorCode.ContestNotExist,  "msg":ErrorCode.ContestNotExistStr};
+  }
+
+  let judges = contestObj.get("judges");
+  let judgeIndex = -1; 
+  for(let i = 0; i < judges.length; i++){
+    if(judges[i]==judgeId){
+      judgeIndex = i;
+      break;
+    }
+  }
+  if(judgeIndex == -1){
+    return {"code":ErrorCode.JudgeNotInContest,  "msg":ErrorCode.JudgeNotInContestStr};
+  }
+
+  let judgeStates = contestObj.get("judgeStates");
+  judgeStates[judgeIndex] = "accepted";
+  contestObj.set(judgeStates,judgeStates);
+  await contestObj.save();
+  // // 给组织者发推送（未写）
+  return {"code":ErrorCode.SUCCESS,  "msg":ErrorCode.SuccessStr};
+
+});
+
+// 裁判拒绝邀请
+Parse.Cloud.define("contestJudgeRejected", async (request) => {
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+  let objectId = request.params.objectId;
+  let judgeId = request.params.accountId;
+  const contestQuery = new Parse.Query("contest");
+  let contestObj = await contestQuery.get(objectId);
+  if(!contestObj){
+    return {"code":ErrorCode.ContestNotExist,  "msg":ErrorCode.ContestNotExistStr};
+  }
+
+  let judges = contestObj.get("judges");
+  let judgeIndex = -1; 
+  for(let i = 0; i < judges.length; i++){
+    if(judges[i]==judgeId){
+      judgeIndex = i;
+      break;
+    }
+  }
+  if(judgeIndex == -1){
+    return {"code":ErrorCode.JudgeNotInContest,  "msg":ErrorCode.JudgeNotInContestStr};
+  }
+
+  let judgeStates = contestObj.get("judgeStates");
+  judgeStates[judgeIndex] = "rejected";
+  contestObj.set(judgeStates,judgeStates);
+  await contestObj.save();
+  // 给组织者发推送（未写）
+  return {"code":ErrorCode.SUCCESS,  "msg":ErrorCode.SuccessStr};
+});
+
+
+
+// 观众和参赛者都可以通过这接口加入
+Parse.Cloud.define("joinContest", async (request) => {
+
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+  let objectId = request.params.objectId;
+  let type = request.params.type;
+  let accountId = request.params.accountId;
+  if((type!="contestant"&&type!="audience") || !objectId ){
+    return {"code":ErrorCode.ParameterError,  "msg":ErrorCode.ParameterErrorStr};
+  }
+
+  const contestQuery = new Parse.Query("contest");
+  let contestObj = await contestQuery.get(objectId);
+  if(!contestObj){
+    return {"code":ErrorCode.ContestNotExist,  "msg":ErrorCode.ContestNotExistStr};
+  }
+
+  if(type=="contestant"){
+    let contestants = contestObj.get(contestants);
+    let index = -1; 
+    for(let i = 0; i < contestants.length; i++){
+      if(contestants[i]==accountId){
+        index = i;
+        break;
+      }
+    }
+    if(index > -1){
+      return {"code":ErrorCode.AlreadyInContest,  "msg":ErrorCode.AlreadyInContestStr};
+    }
+    contestants.push(accountId);
+    contestObj.set("contestants",contestants);
+  } else if(type=="audience"){
+    let audiences = contestObj.get(audiences);
+    let index = -1; 
+    for(let i = 0; i < audiences.length; i++){
+      if(audiences[i]==accountId){
+        index = i;
+        break;
+      }
+    }
+    if(index > -1){
+      return {"code":ErrorCode.AlreadyInContest,  "msg":ErrorCode.AlreadyInContestStr};
+    }
+    audiences.push(accountId);
+    contestObj.set("audiences",audiences);
+  }
+  await contestObj.save();
+  // 给组织者发推送（未写）
+  return {"code":ErrorCode.SUCCESS,  "msg":ErrorCode.SuccessStr};
+
+
+});
+
+
+// 添加一个联系人
+Parse.Cloud.define("connectionRequest", async (request) => {
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+  let invitee = request.params.invitee;
+  let inviter = request.params.accountId;
+  let connectRequestObject = new Parse.Object("connect-request");
+  connectRequestObject.set("inviter",inviter);
+  connectRequestObject.set("invitee",invitee);
+  connectRequestObject.set("status","pending");
+  let saveRes = await connectRequestObject.save(); 
+  return {"code":ErrorCode.SUCCESS,  "data":saveRes};
+});
+
+// 联系人同意
+Parse.Cloud.define("connectionApproved", async (request) => {
+  
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+
+  let objectId = request.params.objectId;
+  const connectRequestQuery = new Parse.Query("connect-request");
+  let connectRequestObj = await connectRequestQuery.get(objectId);
+  if(!connectRequestObj){
+    return {"code":ErrorCode.NoConnectionRequest,  "msg":ErrorCode.NoConnectionRequestStr};
+  }
+
+  let inviter = connectRequestObj.get("inviter");
+  let invitee = connectRequestObj.get("invitee");
+  let status = connectRequestObj.get("status");
+  if(status!="pending"){
+    return {"code":ErrorCode.ConnectionRequestHasDealed,  "msg":ErrorCode.ConnectionRequestHasDealedStr};
+  }
+
+  const inviterQuery = new Parse.Query("account");
+  let inviterObj = await inviterQuery.get(inviter); 
+  if(!inviterObj){
+    return {"code":ErrorCode.ConnectionRequestNotValid,  "msg":ErrorCode.ConnectionRequestNotValidStr};
+  }
+
+  const inviteeQuery = new Parse.Query("account");
+  let inviteeObj = await inviterQuery.get(invitee); 
+  if(!inviteeObj){
+    return {"code":ErrorCode.ConnectionRequestNotValid,  "msg":ErrorCode.ConnectionRequestNotValidStr};
+  }
+
+  const inviterConnectionQuery = new Parse.Query("connection");
+  inviterConnectionQuery.equalTo("userId", inviter);
+  let inviterConnection = await inviterConnectionQuery.first();
+
+  if(!inviterConnection){
+    inviterConnection = new Parse.Object("connection");
+    inviterConnection.set("userId", inviter);
+  }
+  if(inviteeObj.get("role")=="student"){
+    let students = inviterConnection.get("students");
+    if(!students){
+      students = [];
+    }
+    students.push(inviteeObj);
+    inviterConnection.set("students",students);
+  }else if(inviteeObj.get("role")=="teachers"){
+    let teachers = inviterConnection.get("teachers");
+    if(!teachers){
+      teachers = [];
+    }
+    teachers.push(inviteeObj);
+    inviterConnection.set("teachers",teachers);
+  }
+  await inviterConnection.save();  
+
+  const inviteeConnectionQuery = new Parse.Query("connection");
+  inviteeConnectionQuery.equalTo("userId", invitee);
+  let inviteeConnection = await inviteeConnectionQuery.first();
+  if(!inviteeConnection){
+    inviteeConnection = new Parse.Object("connection");
+    inviteeConnection.set("userId", inviter);
+  }
+
+  if(inviterObj.get("role")=="student"){
+    let students = inviteeConnection.get("students");
+    if(!students){
+      students = [];
+    }
+    students.push(inviterObj);
+    inviteeConnection.set("students",students);
+  }else if(inviterObj.get("role")=="teachers"){
+    let teachers = inviteeConnection.get("teachers");
+    if(!teachers){
+      teachers = [];
+    }
+    teachers.push(inviterObj);
+    inviteeConnection.set("teachers",teachers);
+  }
+
+  await inviteeConnection.save();  
+
+  connectRequestObj.set("status","accepted");
+  await connectRequestObj.save(); 
+  return {"code":ErrorCode.SUCCESS, "msg":ErrorCode.SuccessStr};
+
+});
+
+// 联系人拒绝
+Parse.Cloud.define("connectionRejected", async (request) => {
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+
+  let objectId = request.params.objectId;
+  const connectRequestQuery = new Parse.Query("connect-request");
+  let connectRequestObj = await connectRequestQuery.get(objectId);
+  if(!connectRequestObj){
+    return {"code":ErrorCode.NoConnectionRequest,  "msg":ErrorCode.NoConnectionRequestStr};
+  }
+  connectRequestObj.set();
+  connectRequestObject.set("status","rejected");
+  let saveRes = await connectRequestObject.save(); 
+  return {"code":ErrorCode.SUCCESS, "msg":ErrorCode.SuccessStr};
 });
 
 
@@ -33,7 +480,9 @@ Parse.Cloud.define("getSMSVerifyCode", async (request) => {
 //////////////////////// SCHEMA ///////////////////////////////////
 //////////////////////// ClassName: Account ///////////////////////////////////
 // name: contest name, string
-// type: 0: 普通用户,1:学生, 2:家长， 3:机构/学校,  int
+// role: 0: 普通用户,1:学生, 2:家长， 3:机构/学校,  int
+// userid： 用户id，用来登陆用
+// secret：md5的加密串，用来登陆使用
 // uid:  int32
 // serial_number:   judges array
 // state:  0: 未认证, 1: 认证通过
@@ -42,6 +491,9 @@ Parse.Cloud.define("getSMSVerifyCode", async (request) => {
 // institutions: [] 机构  account
 // token: 登陆token，string
 // deviceToken: 用来push消息，string
+// mobile_phone: 手机号 string
+// email: 电子邮箱 string
+// wechat: 微信id
 Parse.Cloud.define("ceateAccount", async (request) => {
   console.dir("enter ceateAccount" );
   let name = request.params.name;
@@ -80,6 +532,11 @@ Parse.Cloud.define("ceateAccount", async (request) => {
 Parse.Cloud.define("bindGuardian", async (request) => {
   // 向要绑定的家长推送消息
   
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":"token invalid, please login first"};
+  }
+
+
   const query = new Parse.Query("VerifyEvents");
   let uid_to_verify = request.params.uid_to_verify;
   let uid_verify = request.params.uid_verify;
@@ -109,7 +566,7 @@ Parse.Cloud.define("bindGuardian", async (request) => {
   }
 
   let channel_id = "" + uid_verify;
-/*
+
   Parse.Push.send({
     channels: [channel_id],
     data: {
@@ -117,10 +574,21 @@ Parse.Cloud.define("bindGuardian", async (request) => {
         alert: channel_id,
     }
   }, { useMasterKey: true });
-*/
 
-return {"code":0, "msg":"OK", "event_id":event_id};
-  
+
+  return {"code":0, "msg":"OK", "event_id":event_id};
+});
+
+
+Parse.Cloud.define("testpush", async (request) => {
+  Parse.Push.send({
+    channels: ["aaaaaaaaaaaaa"],
+    data: {
+        title: "请您认证您的孩子",
+        alert: "hhhhhhhhhhhhh",
+    }
+  }, { useMasterKey: true });
+  return {"code":0, "msg":"eeeeeeeeeeeeeeeeeee"};
 });
 
 Parse.Cloud.define("acceptBindGuardian", async (request) => {
@@ -200,6 +668,7 @@ Parse.Cloud.define("acceptBindGuardian", async (request) => {
 
   return {"code":0, "msg":"OK"};
 });
+
 
 Parse.Cloud.define("rejectBindGuardian", async (request) => {
   // 向孩子推送消息
