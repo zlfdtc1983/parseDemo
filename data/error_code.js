@@ -29,6 +29,10 @@ exports.default ={
     VerifyReqNotExistStr:"verification request not exist",
     UserNotExist:13,
     UserNotExistStr:"user not exist",
+    SchoolNotExist:14,
+    SchoolNotExistStr:"school not exist",
+    ConnectionNotExist:15,
+    ConnectionNotExistStr:"Connection not exist",
 
 
 

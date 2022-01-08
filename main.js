@@ -75,6 +75,50 @@ Parse.Cloud.define("VerifySMSCode", async (request) => {
 });
 
 
+
+
+Parse.Cloud.define("registerOrganizaton", async (request) => {
+  let englishName = request.params.englishName;
+  let chineseName = request.params.chineseName;
+  let displayName = request.params.displayName;
+  let legalName = request.params.legalName;
+  let orgType = request.params.orgType;
+  let licenseNumber = request.params.licenseNumber;
+  let address = request.params.address;
+  let phone = request.params.phone;
+  let email = request.params.email;
+  let contactPerson = request.params.contactPerson;
+
+  let organizatonObject = new Parse.Object("organizaton");
+  organizatonObject.set("englishName",englishName);
+  organizatonObject.set("chineseName",chineseName);
+  organizatonObject.set("displayName",displayName);
+  organizatonObject.set("legalName",legalName);
+  organizatonObject.set("orgType",orgType);
+  organizatonObject.set("licenseNumber",licenseNumber);
+  organizatonObject.set("address",address);
+  organizatonObject.set("phone",phone);
+  organizatonObject.set("email",email);
+  organizatonObject.set("contactPerson",contactPerson);
+
+  if(orgType=="institution"){
+    let institutionProfile = request.params.institutionProfile;
+    if(!institutionProfile){
+      organizatonObject.set("institutionProfile",institutionProfile);
+    }
+  }else if(orgType=="school"){
+    let schoolProfile = request.params.schoolProfile;
+    if(!schoolProfile){
+      organizatonObject.set("schoolProfile",schoolProfile);
+    }
+  }
+
+  let saveRes = await organizatonObject.save();
+  return {"code":ErrorCode.SUCCESS, "organizaton":saveRes};
+
+});
+
+
 Parse.Cloud.define("registerAccount", async (request) => {
   let userName = request.params.userName;
   let firstName = request.params.firstName;
@@ -152,6 +196,69 @@ Parse.Cloud.define("login", async (request) => {
   accountObj.set("tokenDate",curDate);
   await accountObj.save();
   return {"code":ErrorCode.LoginFailed, "token":token};
+});
+
+
+Parse.Cloud.define("getIdleJudges", async (request) => {
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+
+  let accountId = request.params.accountId;
+  const connectionQuery = new Parse.Query("connection");
+  connectionQuery.equalTo("user", accountId);
+  let connectionObj = await connectionQuery.first();
+  if(!connectionObj){
+    return {"code":ErrorCode.ConnectionNotExist, "msg":ErrorCode.ConnectionNotExistStr};
+  }
+
+  let startTime = new Date(request.params.startTime);
+  let endTime = new Date(request.params.endTime);
+
+  let teachers = connectionObj.get("teachers");
+
+  let weekday = 1;
+  const workPeriodQuery = new Parse.Query("work-period");
+  workPeriodQuery.containedBy("userid",teachers);
+  workPeriodQuery.equalTo("weekday",weekday);
+  workPeriodQuery.lessThanOrEqualTo("startTime",startTime );
+  workPeriodQuery.greaterThanOrEqualTo("endTime",endTime);
+  let workPeriodsObjs = await workPeriodQuery.find();
+  let validUsers = [];
+  for(let i=0; i<workPeriodsObjs.length; i++){
+    validUsers.push(workPeriodsObjs[i].get("userid"));
+  }
+
+  const engagedTimeQuery = new Parse.Query("engaged-time");
+  engagedTimeQuery.containedBy("userid",validUsers);
+
+  const engagedTimeQuery1 = new Parse.Query("engaged-time");
+  engagedTimeQuery1.greaterThan("startTime",startTime);
+  engagedTimeQuery1.lessThan("startTime",endTime);
+
+  const engagedTimeQuery2 = new Parse.Query("engaged-time");
+  engagedTimeQuery2.greaterThan("endTime",startTime);
+  engagedTimeQuery2.lessThan("endTime",endTime);
+
+  const engagedTimeQuery3 = new Parse.Query("engaged-time");
+  engagedTimeQuery3.greaterThanOrEqualTo("endTime",endTime );
+  engagedTimeQuery3.lessThanOrEqualTo("startTime",startTime);
+  const mainQuery = Parse.Query.and(engagedTimeQuery,Parse.Query.or(engagedTimeQuery1,engagedTimeQuery2,engagedTimeQuery3));
+  let engagedTimeObjs = await mainQuery.find();
+  for(let j=0; j<engagedTimeObjs.length; j++){
+    let userid = engagedTimeObjs[j].get("userid");
+    let index = validUsers.indexOf(userid);
+    if(index>-1){
+      validUsers.splice(index,1);
+    }
+  }
+
+  const AccountQuery = new Parse.Query("Account");
+  AccountQuery.containedBy("userid",validUsers);
+  let judges = await AccountQuery.find();
+  return {"code":0, "validjudges":judges};
+  
+ 
 });
 
 Parse.Cloud.define("createCompetition", async (request) => {
@@ -565,7 +672,7 @@ Parse.Cloud.define("bindGuardian", async (request) => {
   // }, { useMasterKey: true });
 
 
-  return {"code":0, "msg":"OK", "event_id":event_id};
+  return {"code":0, "msg":"OK", "verify_id":event_id};
 });
 
 
@@ -618,6 +725,130 @@ Parse.Cloud.define("rejectBindGuardian", async (request) => {
   }
   verifyReqObj.set("status", "rejected");
   await verifyReqObj.save();
+
+  return {"code":ErrorCode.SUCCESS, "msg":ErrorCode.SuccessStr};
+});
+
+
+Parse.Cloud.define("verifyStudent", async (request) => {
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+
+  let invitee = request.params.invitee;
+  let inviter = request.params.accountId;
+
+  let verifyEventObj = new Parse.Object("verification-request");
+    verifyEventObj.set("inviter", inviter);
+    verifyEventObj.set("invitee", invitee);
+    verifyEventObj.set("verificationType", "organization");
+    verifyEventObj.set("verificationKind", "verifyStudent");
+    verifyEventObj.set("status", "pending");
+    let saveRes = await verifyEventObj.save();
+    event_id = saveRes.id;
+
+  // 建立认证单子，
+  // 向学校推送消息
+  
+
+  // let channel_id = "" + uid_verify;
+
+  // Parse.Push.send({
+  //   channels: [channel_id],
+  //   data: {
+  //       title: "请您认证此学生",
+  //       alert: channel_id,
+  //   }
+  // }, { useMasterKey: true });
+
+
+  return {"code":0, "msg":"OK", "verify_id":event_id};
+
+});
+
+
+Parse.Cloud.define("approveStudentVerify", async (request) => {
+
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+
+  let verifyReqId = request.params.verifyReqId;
+  const verifyReqQuery = new Parse.Query("verification-request");
+  let verifyReqObj = await verifyReqQuery.get(verifyReqId); // 和上面注释中的功能等同
+  if(!verifyReqObj){
+    return {"code":ErrorCode.VerifyReqNotExist, "msg":ErrorCode.VerifyReqNotExistStr};
+  }
+
+  const  studentQuery = new Parse.Query("Account");
+  let studentId = verifyReqObj.get("inviter");
+  let schoolId = verifyReqObj.get("invitee");
+  let studentObj = await studentQuery.get(studentId); 
+  if(!studentObj){
+    return {"code":ErrorCode.UserNotExist, "msg":ErrorCode.UserNotExistStr};
+  }
+  const schoolQuery = new Parse.Query("organizaton");
+  let schoolObj = await schoolQuery.get(schoolId); 
+  if(!schoolObj){
+    return {"code":ErrorCode.SchoolNotExist, "msg":ErrorCode.SchoolNotExistStr};
+  }
+  
+  let studentProfile = studentObj.get("studentProfile");
+  if(!studentProfile){
+    studentProfile = {};
+  }
+  studentProfile.verified = true;
+  studentProfile.school = schoolId;
+  studentObj.set("studentProfile",studentProfile);
+  await studentObj.save();
+
+  verifyReqObj.set("status", "approved");
+  await verifyReqObj.save();
+
+ 
+  // let school_name = schoolObj.get("name");
+  // let channel_id = "" + uid;
+  // Parse.Push.send({
+  //   channels: [channel_id],
+  //   data: {
+  //       title: school_name+"已经和您绑定监护关系",
+  //       alert: channel_id,
+  //   }
+  // }, { useMasterKey: true });
+
+  
+
+  return {"code":ErrorCode.SUCCESS, "msg":ErrorCode.SuccessStr};
+});
+
+Parse.Cloud.define("rejectStudentVerify", async (request) => {
+  // 更新认证单子
+  // 向学生推送认证失败消息
+
+  if(!checkUserValid(request)){
+    return {"code":ErrorCode.TokenInvalid, "msg":ErrorCode.TokenInvalidMsg};
+  }
+
+  let verifyReqId = request.params.verifyReqId;
+  const verifyReqQuery = new Parse.Query("verification-request");
+  let verifyReqObj = await verifyReqQuery.get(verifyReqId); // 和上面注释中的功能等同
+  if(!verifyReqObj){
+    return {"code":ErrorCode.VerifyReqNotExist, "msg":ErrorCode.VerifyReqNotExistStr};
+  }
+  verifyReqObj.set("status", "rejected");
+  await verifyReqObj.save();
+
+  
+
+  // let school_name = schoolObj.get("name");
+  // let channel_id = "" + uid;
+  // Parse.Push.send({
+  //   channels: [channel_id],
+  //   data: {
+  //       title: school_name+"拒绝了您的认证请求",
+  //       alert: channel_id,
+  //   }
+  // }, { useMasterKey: true });
 
   return {"code":ErrorCode.SUCCESS, "msg":ErrorCode.SuccessStr};
 });
