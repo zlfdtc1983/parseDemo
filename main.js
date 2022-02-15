@@ -22,6 +22,233 @@ Parse.Cloud.beforeSave(Parse.User, async (request) => {
 });
 
 
+Parse.Cloud.beforeSave("booking", async (request) => {
+  let dateTime = request.object.get("dateTime");
+  let duration = request.object.get("duration");
+
+  if(!dateTime || !duration){
+    return;
+  }
+
+  let subscriber = request.object.get("subscriber");
+  let promisee = request.object.get("promisee");
+
+
+  request.object.set("startTime", dateTime);
+
+  let endTime = new Date(dateTime.getTime());
+  let themin =  endTime.getMinutes();
+  endTime.setMinutes(themin+duration);
+  request.object.set("endTime", endTime);
+ 
+});
+
+
+
+Parse.Cloud.define("getIdleUsers", async (request) => {
+  let userObjId = request.params.userId;
+  let startTime = new Date(request.params.startTime);
+  let duration = request.params.duration;
+
+  let endTime = new Date(request.params.startTime);
+  let themin =  endTime.getMinutes();
+  endTime.setMinutes(themin+duration);
+
+
+  let day = startTime.getDay();
+  let beginHour = startTime.getHours();
+  let beginMinute = startTime.getMinutes();
+  let startPeriod = beginHour*100 + beginMinute;
+
+  let tempMinutes = duration+beginMinute;
+  let endPeriod = beginHour*100 + (tempMinutes/60)*100 + tempMinutes%60;
+
+
+  let workUsers = [];
+
+  if(userObjId){
+    const connectionQuery = new Parse.Query("connection");
+    let ownerCondition = {"__type":"Pointer","className":"_User","objectId":userObjId};
+    connectionQuery.equalTo("owner", ownerCondition);
+    let connectionObj = await connectionQuery.first();
+
+    
+    if(!connectionObj){
+      return {"code":0, "data":[]};
+    }
+
+    let connections = await connectionObj.get('connected').query().find();
+    console.log("getIdleUsers connections.length=="+connections.length)
+    if(!connections || connections.length==0){
+      return {"code":0, "data":[]};
+    }
+
+    
+    for(let i =0; i<connections.length; i++){
+      let wpCondition = {"__type":"Pointer","className":"_User","objectId":connections[i].id};
+      workUsers.push(wpCondition);
+    }
+  }
+
+  
+
+ 
+
+  
+  const workPeriodQuery = new Parse.Query("workPeriod");
+  workPeriodQuery.equalTo("weekday",day);
+  workPeriodQuery.lessThanOrEqualTo("startTime",startPeriod);
+  workPeriodQuery.greaterThanOrEqualTo("endTime",endPeriod);
+  if(userObjId){
+    workPeriodQuery.containedIn("user",workUsers);
+  }
+
+  let workPeriods = await workPeriodQuery.find();
+  console.log("getIdleUsers workPeriods.length=="+workPeriods.length)
+  if(!workPeriods || workPeriods.length==0){
+    return {"code":0, "data":[]};
+  }
+
+
+  const bookingQuery = new Parse.Query("booking");
+
+  let bookingUsers = [];
+  for(let i =0; i<workPeriods.length; i++){
+    bookingUsers.push(workPeriods[i].get("user"));
+  }
+  bookingQuery.containedIn("promisee",bookingUsers);
+
+
+  const bookingQuery1 = new Parse.Query("booking");
+  bookingQuery1.greaterThan("startTime",startTime);
+  bookingQuery1.lessThan("startTime",endTime);
+
+  const bookingQuery2 = new Parse.Query("booking");
+  bookingQuery2.greaterThan("endTime",startTime);
+  bookingQuery2.lessThan("endTime",endTime);
+
+  const bookingQuery3 = new Parse.Query("booking");
+  bookingQuery3.greaterThanOrEqualTo("endTime",endTime );
+  bookingQuery3.lessThanOrEqualTo("startTime",startTime);
+  const mainQuery = Parse.Query.and(bookingQuery,Parse.Query.or(bookingQuery1,bookingQuery2,bookingQuery3));
+  let bookingObjs = await mainQuery.find();
+
+  console.log("getIdleUsers bookingObjs.length=="+bookingObjs.length)
+
+
+  let validUsers= [];
+  for(let i =0; i<workPeriods.length; i++){
+    let theid = workPeriods[i].get("user").id;
+    if(validUsers.indexOf(theid)<0){
+      validUsers.push(theid);
+    }
+   
+  }
+
+  console.log("getIdleUsers validUsers.length==" + validUsers.length);
+
+  for(let j=0; j<bookingObjs.length; j++){
+    let userid = bookingObjs[j].get("promisee").id;
+    let index = validUsers.indexOf(userid);
+    if(index>-1){
+      validUsers.splice(index,1);
+    }
+  }
+
+  const UserQuery = new Parse.Query("_User");
+  UserQuery.containedIn("objectId",validUsers);
+  let users = await UserQuery.find();
+
+  return {"code":0, "data":users};
+  
+});
+
+
+Parse.Cloud.define("getUserValidTime", async (request) => {
+  let userObjId = request.params.userId;
+  let year = request.params.year;
+  let month = request.params.month;
+
+
+  let curDate = new Date();
+
+  let startTime = new Date(year,month-1,1);
+  let endTime= new Date(year,month,1);
+
+  const workPeriodQuery = new Parse.Query("workPeriod");
+  // workPeriodQuery.equalTo("weekday",day);
+  // workPeriodQuery.lessThanOrEqualTo("startTime",startPeriod);
+  // workPeriodQuery.greaterThanOrEqualTo("endTime",endPeriod);
+  let usercondition = {"__type":"Pointer","className":"_User","objectId":userObjId};
+  workPeriodQuery.equalTo("user",usercondition);
+  //query.descending("weekday")
+  query.ascending("weekday");
+  query.ascending("startTime");
+  
+  let workPeriods = await workPeriodQuery.find();
+  for(let i = 0; i<workPeriods.length;i++){
+    let workPeriod = workPeriods[i];
+    let wpStartTime = workPeriod.get("startTime");
+    let wpEndTime = workPeriod.get("endTime");
+    let weekday = workPeriod.get("weekday");
+    
+    let myBegin = new Date(year,month-1,1);
+    let beginDay = myBegin.getDay();
+    let dis = weekday-beginDay;
+    if(dis<0){
+      dis = dis+7;
+    }
+
+    let validUserTimes = [];
+
+    while(true){
+      let tempDatetime = new Date(year,month-1,1);
+      let tempDate = tempDatetime.getDate();
+      let newDate = tempDate + dis;
+      tempDatetime.setDate(newDate);
+
+      let beginTime = new Date(tempDatetime.getTime());
+      let beginHour = wpStartTime/100;
+      let beginMin = wpStartTime%100;
+      beginTime.setHours(beginHour);
+      beginTime.setMinutes(beginMin);
+      let finishTime = new Date(tempDatetime.getTime());
+      let finishHour = wpEndTime/100;
+      let finishMin = wpEndTime%100;
+      finishTime.setHours(finishHour);
+      finishTime.setMinutes(finishMin);
+
+      if(beginTime<curDate||finishTime<curDate){
+        continue;
+      }
+
+      if(beginTime>endTime||finishTime>endTime){
+        break;
+      }
+      validUserTimes.push({startTime:beginTime,endTime:finishTime});
+    }
+
+  }
+
+
+  const bookingQuery1 = new Parse.Query("booking");
+  bookingQuery1.greaterThanOrEqualTo("startTime",startTime);
+  bookingQuery1.lessThanOrEqualTo("startTime",endTime);
+
+  const bookingQuery2 = new Parse.Query("booking");
+  bookingQuery2.greaterThanOrEqualTo("endTime",startTime);
+  bookingQuery2.lessThanOrEqualTo("endTime",endTime);
+
+  const mainQuery = Parse.Query.or(bookingQuery1,bookingQuery2)
+  mainQuery.equalTo("promisee",usercondition);
+  mainQuery.ascending("startTime");
+  let bookingObjs = await mainQuery.find();
+  for(let j = 0; j<bookingObjs.length;j++){
+    let bookingObj= bookingObjs[j];
+  }
+
+});
+
 Parse.Cloud.define("testinsert", async (request) => {
 
   let kkk = request.params.kkk;
@@ -160,8 +387,6 @@ Parse.Cloud.define("getRelations", async (request) => {
 });
 
 
-
-
 Parse.Cloud.define("getConnection", async (request) => {
   const connectionQuery = new Parse.Query("connection");
   connectionQuery.include("from");
@@ -189,172 +414,74 @@ Parse.Cloud.define("addConnection", async (request) => {
   return {"code":0, "data":saveres};
 });
 
-Parse.Cloud.define("getIdleJudgesForComp", async (request) => {
-  let userObjId = request.params.userObjId;
-  let startTime = new Date(request.params.startTime);
-  let duration = request.params.duration;
-
-  let endTime = new Date(request.params.startTime);
-  let themin =  endTime.getMinutes();
-  endTime.setMinutes(themin+duration);
-
-  const connectionQuery = new Parse.Query("connection");
-  let ownerCondition = {"__type":"Pointer","className":"_User","objectId":userObjId};
-  connectionQuery.equalTo("owner", ownerCondition);
-  let connectionObj = await connectionQuery.first();
-
-  
-  if(!connectionObj){
-    return {"code":0, "data":[]};
-  }
-
-  let connections = await connectionObj.get('connected').query().find();
-  console.log("kkkkkkkkkkkk connections.length=="+connections.length)
-  if(!connections || connections.length==0){
-    return {"code":0, "data":[]};
-  }
-
-  let day = startTime.getDay();
-  let beginHour = startTime.getHours();
-  let beginMinute = startTime.getMinutes();
-  let startPeriod = beginHour*100 + beginMinute;
-
-  let tempMinutes = duration+beginMinute;
-  let endPeriod = beginHour*100 + (tempMinutes/60)*100 + tempMinutes%60;
-
-  let workUsers = [];
-  for(let i =0; i<connections.length; i++){
-    let wpCondition = {"__type":"Pointer","className":"_User","objectId":connections[i].id};
-    workUsers.push(wpCondition);
-  }
-  const workPeriodQuery = new Parse.Query("workPeriod");
-  workPeriodQuery.equalTo("weekday",day);
-  workPeriodQuery.lessThanOrEqualTo("startTime",startPeriod);
-  workPeriodQuery.greaterThanOrEqualTo("endTime",endPeriod);
-  workPeriodQuery.containedIn("user",workUsers);
-
-  let workPeriods = await workPeriodQuery.find();
-  console.log("uuuuuuuuuuuu workPeriods.length=="+workPeriods.length)
-  if(!workPeriods || workPeriods.length==0){
-    return {"code":0, "data":[]};
-  }
 
 
-  const bookingQuery = new Parse.Query("booking");
+// Parse.Cloud.define("getIdleJudges", async (request) => {
+// /*
+//   let userId = request.params.userId;
+//   const userQuery = new Parse.Query("_User");
+//   let userObj = await userQuery.get(userId);
+//   if(!userObj){
+//     return {"code":ErrorCode.UserNotExist, "msg":ErrorCode.UserNotExistStr};
+//   }
 
-  let bookingUsers = [];
-  for(let i =0; i<workPeriods.length; i++){
-    bookingUsers.push(workPeriods[i].get("user"));
-  }
-  bookingQuery.containedIn("promisee",bookingUsers);
+// */
 
+//   const connectionQuery = new Parse.Query("connection");
+//   connectionQuery.equalTo("user", userId);
+//   let connectionObj = await connectionQuery.first();
+//   if(!connectionObj){
+//     return {"code":ErrorCode.ConnectionNotExist, "msg":ErrorCode.ConnectionNotExistStr};
+//   }
 
-  const bookingQuery1 = new Parse.Query("booking");
-  bookingQuery1.greaterThan("startTime",startTime);
-  bookingQuery1.lessThan("startTime",endTime);
+//   let startTime = new Date(request.params.startTime);
+//   let endTime = new Date(request.params.endTime);
 
-  const bookingQuery2 = new Parse.Query("booking");
-  bookingQuery2.greaterThan("endTime",startTime);
-  bookingQuery2.lessThan("endTime",endTime);
+//   let teachers = connectionObj.get("teachers");
 
-  const bookingQuery3 = new Parse.Query("booking");
-  bookingQuery3.greaterThanOrEqualTo("endTime",endTime );
-  bookingQuery3.lessThanOrEqualTo("startTime",startTime);
-  const mainQuery = Parse.Query.and(bookingQuery,Parse.Query.or(bookingQuery1,bookingQuery2,bookingQuery3));
-  let bookingObjs = await mainQuery.find();
+//   let weekday = 1;
+//   const workPeriodQuery = new Parse.Query("work-period");
+//   workPeriodQuery.containedBy("userId",teachers);
+//   workPeriodQuery.equalTo("weekday",weekday);
+//   workPeriodQuery.lessThanOrEqualTo("startTime",startTime );
+//   workPeriodQuery.greaterThanOrEqualTo("endTime",endTime);
+//   let workPeriodsObjs = await workPeriodQuery.find();
+//   let validUsers = [];
+//   for(let i=0; i<workPeriodsObjs.length; i++){
+//     validUsers.push(workPeriodsObjs[i].get("userid"));
+//   }
 
-  console.log("yyyyyyyyyyyyyyyyyyyyy bookingObjs.length=="+bookingObjs.length)
+//   const engagedTimeQuery = new Parse.Query("engaged-time");
+//   engagedTimeQuery.containedBy("userid",validUsers);
 
+//   const engagedTimeQuery1 = new Parse.Query("engaged-time");
+//   engagedTimeQuery1.greaterThan("startTime",startTime);
+//   engagedTimeQuery1.lessThan("startTime",endTime);
 
-  let validUsers= [];
-  for(let i =0; i<workPeriods.length; i++){
-    validUsers.push(workPeriods[i].get("user"));
-  }
+//   const engagedTimeQuery2 = new Parse.Query("engaged-time");
+//   engagedTimeQuery2.greaterThan("endTime",startTime);
+//   engagedTimeQuery2.lessThan("endTime",endTime);
 
-  console.log();
+//   const engagedTimeQuery3 = new Parse.Query("engaged-time");
+//   engagedTimeQuery3.greaterThanOrEqualTo("endTime",endTime );
+//   engagedTimeQuery3.lessThanOrEqualTo("startTime",startTime);
+//   const mainQuery = Parse.Query.and(engagedTimeQuery,Parse.Query.or(engagedTimeQuery1,engagedTimeQuery2,engagedTimeQuery3));
+//   let engagedTimeObjs = await mainQuery.find();
+//   for(let j=0; j<engagedTimeObjs.length; j++){
+//     let userid = engagedTimeObjs[j].get("userid");
+//     let index = validUsers.indexOf(userid);
+//     if(index>-1){
+//       validUsers.splice(index,1);
+//     }
+//   }
 
-  for(let j=0; j<bookingObjs.length; j++){
-    let userid = bookingObjs[j].get("promisee");
-    let index = validUsers.indexOf(userid);
-    if(index>-1){
-      validUsers.splice(index,1);
-    }
-  }
-
-  const UserQuery = new Parse.Query("_User");
-  UserQuery.containedIn("objectId",validUsers);
-  let users = await UserQuery.find();
-
-  return {"code":0, "data":users};
-  
-});
-
-Parse.Cloud.define("getIdleJudges", async (request) => {
-/*
-  let userId = request.params.userId;
-  const userQuery = new Parse.Query("_User");
-  let userObj = await userQuery.get(userId);
-  if(!userObj){
-    return {"code":ErrorCode.UserNotExist, "msg":ErrorCode.UserNotExistStr};
-  }
-
-*/
-
-  const connectionQuery = new Parse.Query("connection");
-  connectionQuery.equalTo("user", userId);
-  let connectionObj = await connectionQuery.first();
-  if(!connectionObj){
-    return {"code":ErrorCode.ConnectionNotExist, "msg":ErrorCode.ConnectionNotExistStr};
-  }
-
-  let startTime = new Date(request.params.startTime);
-  let endTime = new Date(request.params.endTime);
-
-  let teachers = connectionObj.get("teachers");
-
-  let weekday = 1;
-  const workPeriodQuery = new Parse.Query("work-period");
-  workPeriodQuery.containedBy("userId",teachers);
-  workPeriodQuery.equalTo("weekday",weekday);
-  workPeriodQuery.lessThanOrEqualTo("startTime",startTime );
-  workPeriodQuery.greaterThanOrEqualTo("endTime",endTime);
-  let workPeriodsObjs = await workPeriodQuery.find();
-  let validUsers = [];
-  for(let i=0; i<workPeriodsObjs.length; i++){
-    validUsers.push(workPeriodsObjs[i].get("userid"));
-  }
-
-  const engagedTimeQuery = new Parse.Query("engaged-time");
-  engagedTimeQuery.containedBy("userid",validUsers);
-
-  const engagedTimeQuery1 = new Parse.Query("engaged-time");
-  engagedTimeQuery1.greaterThan("startTime",startTime);
-  engagedTimeQuery1.lessThan("startTime",endTime);
-
-  const engagedTimeQuery2 = new Parse.Query("engaged-time");
-  engagedTimeQuery2.greaterThan("endTime",startTime);
-  engagedTimeQuery2.lessThan("endTime",endTime);
-
-  const engagedTimeQuery3 = new Parse.Query("engaged-time");
-  engagedTimeQuery3.greaterThanOrEqualTo("endTime",endTime );
-  engagedTimeQuery3.lessThanOrEqualTo("startTime",startTime);
-  const mainQuery = Parse.Query.and(engagedTimeQuery,Parse.Query.or(engagedTimeQuery1,engagedTimeQuery2,engagedTimeQuery3));
-  let engagedTimeObjs = await mainQuery.find();
-  for(let j=0; j<engagedTimeObjs.length; j++){
-    let userid = engagedTimeObjs[j].get("userid");
-    let index = validUsers.indexOf(userid);
-    if(index>-1){
-      validUsers.splice(index,1);
-    }
-  }
-
-  const userQuery = new Parse.Query("user");
-  userQuery.containedBy("userid",validUsers);
-  let judges = await userQuery.find();
-  return {"code":0, "validjudges":judges};
+//   const userQuery = new Parse.Query("user");
+//   userQuery.containedBy("userid",validUsers);
+//   let judges = await userQuery.find();
+//   return {"code":0, "validjudges":judges};
   
  
-});
+// });
 
 
 
