@@ -5,7 +5,24 @@ const RtcRole = require('./agora/src/RtcTokenBuilder').Role;
 const ErrorCode = require('./data/error_code');
 let TokenMap = {};
 const TOKEN_EXPIRE_TIME = 24*60*60; // 单位秒
+function minutesToString(minutes) {
 
+
+  let hours = parseInt(minutes/60);
+  let min = minutes%60;
+
+  let hoursStr = hours+"";
+  if(hours<10){
+    hoursStr = "0" + hoursStr;
+  }
+  let minStr = min+"";
+  if(min<10){
+    minStr = "0" + minStr;
+  }
+
+  return hoursStr+minStr;
+  
+}
 Parse.Cloud.beforeSave(Parse.User, async (request) => {
   let uid = request.object.get("uid");
   if(!uid){
@@ -23,23 +40,42 @@ Parse.Cloud.beforeSave(Parse.User, async (request) => {
 
 
 Parse.Cloud.beforeSave("booking", async (request) => {
-  let dateTime = request.object.get("dateTime");
-  let duration = request.object.get("duration");
 
-  if(!dateTime || !duration){
+
+  let status = request.object.get("status");
+  if(status!="confirmed"){
+    return;
+  }
+  let startTime = request.object.get("startTime");
+  let endTime = request.object.get("endTime");
+
+  if(!startTime || !endTime){
     return;
   }
 
-  let subscriber = request.object.get("subscriber");
-  let promisee = request.object.get("promisee");
+  let provider = request.object.get("provider");
 
+  const bookingQuery = new Parse.Query("booking");
+  bookingQuery.equalTo("provider",provider);
 
-  request.object.set("startTime", dateTime);
+  const bookingQuery1 = new Parse.Query("booking");
+  bookingQuery1.greaterThan("startTime",startTime);
+  bookingQuery1.lessThan("endTime",startTime);
 
-  let endTime = new Date(dateTime.getTime());
-  let themin =  endTime.getMinutes();
-  endTime.setMinutes(themin+duration);
-  request.object.set("endTime", endTime);
+  const bookingQuery2 = new Parse.Query("booking");
+  bookingQuery2.greaterThan("startTime",endTime);
+  bookingQuery2.lessThan("endTime",endTime);
+
+  const bookingQuery3 = new Parse.Query("booking");
+  bookingQuery3.lessThanOrEqualTo("startTime",startTime);
+  bookingQuery3.greaterThanOrEqualTo("endTime",endTime);
+
+  const mainQuery = Parse.Query.and(bookingQuery,Parse.Query.or(bookingQuery1,bookingQuery2,bookingQuery3));
+  let bookingObjs = await mainQuery.find();
+  if(bookingObjs.length>0){
+    throw 'booking time conflict';
+  }
+
  
 });
 
@@ -48,11 +84,12 @@ Parse.Cloud.beforeSave("booking", async (request) => {
 Parse.Cloud.define("getIdleUsers", async (request) => {
   let userObjId = request.params.userId;
   let startTime = new Date(request.params.startTime);
-  let duration = request.params.duration;
+  let endTime = new Date(request.params.endTime);
+  // let duration = request.params.duration;
 
-  let endTime = new Date(request.params.startTime);
-  let themin =  endTime.getMinutes();
-  endTime.setMinutes(themin+duration);
+  // let endTime = new Date(request.params.startTime);
+  // let themin =  endTime.getMinutes();
+  // endTime.setMinutes(themin+duration);
 
 
   let day = startTime.getDay();
@@ -60,8 +97,12 @@ Parse.Cloud.define("getIdleUsers", async (request) => {
   let beginMinute = startTime.getMinutes();
   let startPeriod = beginHour*100 + beginMinute;
 
-  let tempMinutes = duration+beginMinute;
-  let endPeriod = beginHour*100 + (tempMinutes/60)*100 + tempMinutes%60;
+  let endHour = endTime.getHours();
+  let endMinute = endTime.getMinutes();
+  let endPeriod = endHour*100 + endMinute;
+
+  // let tempMinutes = duration+beginMinute;
+  // let endPeriod = beginHour*100 + (tempMinutes/60)*100 + tempMinutes%60;
 
 
   let workUsers = [];
@@ -116,7 +157,7 @@ Parse.Cloud.define("getIdleUsers", async (request) => {
   for(let i =0; i<workPeriods.length; i++){
     bookingUsers.push(workPeriods[i].get("user"));
   }
-  bookingQuery.containedIn("promisee",bookingUsers);
+  bookingQuery.containedIn("provider",bookingUsers);
 
 
   const bookingQuery1 = new Parse.Query("booking");
@@ -148,7 +189,7 @@ Parse.Cloud.define("getIdleUsers", async (request) => {
   console.log("getIdleUsers validUsers.length==" + validUsers.length);
 
   for(let j=0; j<bookingObjs.length; j++){
-    let userid = bookingObjs[j].get("promisee").id;
+    let userid = bookingObjs[j].get("provider").id;
     let index = validUsers.indexOf(userid);
     if(index>-1){
       validUsers.splice(index,1);
@@ -182,10 +223,11 @@ Parse.Cloud.define("getUserValidTime", async (request) => {
   let usercondition = {"__type":"Pointer","className":"_User","objectId":userObjId};
   workPeriodQuery.equalTo("user",usercondition);
   //query.descending("weekday")
-  query.ascending("weekday");
-  query.ascending("startTime");
+  workPeriodQuery.ascending("weekday");
+  workPeriodQuery.ascending("startTime");
   
   let workPeriods = await workPeriodQuery.find();
+  let validUserTimes = {};
   for(let i = 0; i<workPeriods.length;i++){
     let workPeriod = workPeriods[i];
     let wpStartTime = workPeriod.get("startTime");
@@ -199,21 +241,22 @@ Parse.Cloud.define("getUserValidTime", async (request) => {
       dis = dis+7;
     }
 
-    let validUserTimes = [];
+    
 
     while(true){
       let tempDatetime = new Date(year,month-1,1);
       let tempDate = tempDatetime.getDate();
       let newDate = tempDate + dis;
+      dis = dis + 7;
       tempDatetime.setDate(newDate);
 
       let beginTime = new Date(tempDatetime.getTime());
-      let beginHour = wpStartTime/100;
+      let beginHour = parseInt(wpStartTime/100);
       let beginMin = wpStartTime%100;
       beginTime.setHours(beginHour);
       beginTime.setMinutes(beginMin);
       let finishTime = new Date(tempDatetime.getTime());
-      let finishHour = wpEndTime/100;
+      let finishHour = parseInt(wpEndTime/100);
       let finishMin = wpEndTime%100;
       finishTime.setHours(finishHour);
       finishTime.setMinutes(finishMin);
@@ -225,7 +268,19 @@ Parse.Cloud.define("getUserValidTime", async (request) => {
       if(beginTime>endTime||finishTime>endTime){
         break;
       }
-      validUserTimes.push({startTime:beginTime,endTime:finishTime});
+
+      let date = tempDatetime.getDate();
+      if(validUserTimes[date]==undefined){
+        validUserTimes[date] = [];
+      }
+
+      let beginIndex = beginHour*60 + beginMin;
+      let endIndex = finishHour*60 + finishMin;
+      for(let i = beginIndex; i < endIndex+1; i++ ){
+        if(validUserTimes[date].indexOf(i)<0){
+          validUserTimes[date].push(i);
+        }
+      }
     }
 
   }
@@ -240,12 +295,107 @@ Parse.Cloud.define("getUserValidTime", async (request) => {
   bookingQuery2.lessThanOrEqualTo("endTime",endTime);
 
   const mainQuery = Parse.Query.or(bookingQuery1,bookingQuery2)
-  mainQuery.equalTo("promisee",usercondition);
+  mainQuery.equalTo("provider",usercondition);
+  mainQuery.equalTo("status","confirmed");
   mainQuery.ascending("startTime");
   let bookingObjs = await mainQuery.find();
   for(let j = 0; j<bookingObjs.length;j++){
-    let bookingObj= bookingObjs[j];
+    let bookingObj = bookingObjs[j];
+    let dateTime = bookingObj.get("startTime");
+    let endTime = bookingObj.get("endTime");
+    let endHours = endTime.getHours();
+    let endMin = endTime.getMinutes();
+    let startHours = endTime.getHours();
+    let startMin = endTime.getMinutes();
+    let duration = (endHours-startHours)*60+(endMin-startMin)
+    //let duration = bookingObj.get("duration");
+
+    let date = dateTime.getDate();
+    let hour =  dateTime.getHours();
+    let minute =  dateTime.getMinutes();
+    if(validUserTimes[date]==undefined){
+      continue;
+    }
+    let beginIndex = hour*60+minute;
+    for(let z=beginIndex+1; z<beginIndex+duration; z++){
+      let theIndex = validUserTimes[date].indexOf(z)
+      if(theIndex>-1){
+        validUserTimes[date].splice(theIndex,1);;
+      }
+    }
   }
+
+  let sortedValidUserTimes = {};
+  for(var key in validUserTimes){
+    validUserTimes[key].sort();
+    let afterArray = [];
+    let theLen = validUserTimes[key].length;
+    if(theLen==0||theLen==1){
+      continue;
+    }
+    for(let k = 0; k < theLen; k++){
+      if(k==0 &&  (validUserTimes[key][1]-validUserTimes[0] > 1)){
+       continue;
+      } else if(k==theLen-1 &&  (validUserTimes[key][theLen-1]-validUserTimes[theLen-2] > 1)){
+        continue;
+      } else if((validUserTimes[key][k]-validUserTimes[k-1] > 1)&&(validUserTimes[key][k+1]-validUserTimes[k1] > 1)){
+        continue;
+      }
+      afterArray.push(validUserTimes[key][k]);
+    }
+
+    if(afterArray.length==0||afterArray.length==1){
+      continue;
+    }
+    sortedValidUserTimes[key] = afterArray;
+
+  }
+
+  let finalValidUserTimes = [];
+  for(let dateIndex=1; dateIndex<32; dateIndex++){
+    if(sortedValidUserTimes[dateIndex]==undefined){
+      continue;
+    }
+    console.log("pppppppppppppppppppppp");
+    console.log(sortedValidUserTimes[dateIndex].toString());
+    let theLen = sortedValidUserTimes[dateIndex].length;
+    let monthStr = month+"";
+    if(month<10){
+      monthStr = "0" + monthStr;
+    }
+    let dateStr = dateIndex+"";
+    if(dateIndex<10){
+      dateStr = "0" + dateStr;
+    }
+    let preFix = year+"" + monthStr + dateStr;
+    let beginTime;
+    let endTime;
+    for(let i=0; i<theLen;i++){
+      if(i==0){
+        beginTime = sortedValidUserTimes[dateIndex][i];
+      }else if(i==theLen-1){
+        endTime = sortedValidUserTimes[dateIndex][i];
+        console.log("111111111111111111");
+        console.dir(beginTime);
+        console.dir(endTime);
+        var temp = {"start":preFix+minutesToString(beginTime), "end":preFix+minutesToString(endTime)};
+        finalValidUserTimes.push(temp);
+        
+
+      }else if(sortedValidUserTimes[dateIndex][i+1]-sortedValidUserTimes[dateIndex][i]>1){
+        endTime = sortedValidUserTimes[dateIndex][i];
+        console.log("222222222222222");
+        console.dir(beginTime);
+        console.dir(endTime);
+        var temp = {"start":preFix+minutesToString(beginTime), "end":preFix+minutesToString(endTime)};
+        finalValidUserTimes.push(temp);
+        beginTime = sortedValidUserTimes[dateIndex][i+1];
+      }
+    }
+  }
+  
+  
+  return {"code":0, "userId": userObjId, "data":finalValidUserTimes};
 
 });
 
