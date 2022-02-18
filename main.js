@@ -41,7 +41,7 @@ Parse.Cloud.beforeSave(Parse.User, async (request) => {
 
 Parse.Cloud.beforeSave("booking", async (request) => {
 
-
+console.log("beforeSave booking");
   let status = request.object.get("status");
   if(status!="confirmed"){
     return;
@@ -60,10 +60,10 @@ Parse.Cloud.beforeSave("booking", async (request) => {
 
   const bookingQuery1 = new Parse.Query("booking");
   bookingQuery1.greaterThan("startTime",startTime);
-  bookingQuery1.lessThan("endTime",startTime);
+  bookingQuery1.lessThan("startTime",endTime);
 
   const bookingQuery2 = new Parse.Query("booking");
-  bookingQuery2.greaterThan("startTime",endTime);
+  bookingQuery2.greaterThan("endTime",startTime);
   bookingQuery2.lessThan("endTime",endTime);
 
   const bookingQuery3 = new Parse.Query("booking");
@@ -72,9 +72,17 @@ Parse.Cloud.beforeSave("booking", async (request) => {
 
   const mainQuery = Parse.Query.and(bookingQuery,Parse.Query.or(bookingQuery1,bookingQuery2,bookingQuery3));
   let bookingObjs = await mainQuery.find();
-  if(bookingObjs.length>0){
-    throw 'booking time conflict';
+  console.log("beforeSave bookingObjs.length==="+bookingObjs.length);
+  if(bookingObjs.length==0){
+    return;
   }
+  if(bookingObjs.length==1 && bookingObjs[0].id==request.object.id){
+    console.log("beforeSave bookingObjs[0].id==="+bookingObjs[0].id + "  request.object.id==="+request.object.id);
+    return;
+  }
+  
+  throw 'booking time conflict';
+  
 
  
 });
@@ -299,14 +307,15 @@ Parse.Cloud.define("getUserValidTime", async (request) => {
   mainQuery.equalTo("status","confirmed");
   mainQuery.ascending("startTime");
   let bookingObjs = await mainQuery.find();
+  console.log("bookingObjs.length===="+bookingObjs.length);
   for(let j = 0; j<bookingObjs.length;j++){
     let bookingObj = bookingObjs[j];
     let dateTime = bookingObj.get("startTime");
     let endTime = bookingObj.get("endTime");
     let endHours = endTime.getHours();
     let endMin = endTime.getMinutes();
-    let startHours = endTime.getHours();
-    let startMin = endTime.getMinutes();
+    let startHours = dateTime.getHours();
+    let startMin = dateTime.getMinutes();
     let duration = (endHours-startHours)*60+(endMin-startMin)
     //let duration = bookingObj.get("duration");
 
@@ -317,6 +326,7 @@ Parse.Cloud.define("getUserValidTime", async (request) => {
       continue;
     }
     let beginIndex = hour*60+minute;
+    console.log("uwuwuwuwuuuwu beginIndex=="+beginIndex + " duration=="+duration);
     for(let z=beginIndex+1; z<beginIndex+duration; z++){
       let theIndex = validUserTimes[date].indexOf(z)
       if(theIndex>-1){
